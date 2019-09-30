@@ -2,11 +2,14 @@
 using System.Collections.Generic;
 using System.Data.Entity;
 using System.Data.Entity.Infrastructure;
+using System.Data.Entity.ModelConfiguration.Conventions;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Web;
 using Microsoft.AspNet.Identity;
 using Shrooms.DataLayer.DAL.EntityTypeConfigurations;
+using Shrooms.EntityModels;
+using Shrooms.EntityModels.Attributes;
 using Shrooms.EntityModels.Models;
 using Shrooms.EntityModels.Models.Badges;
 using Shrooms.EntityModels.Models.Books;
@@ -28,6 +31,7 @@ namespace Shrooms.DataLayer.DAL
         public ShroomsDbContext(string connectionStringName)
             : base(connectionStringName)
         {
+            ConnectionName = connectionStringName;
             Configuration.LazyLoadingEnabled = false;
             Configuration.ProxyCreationEnabled = false;
             Database.SetInitializer<ShroomsDbContext>(null);
@@ -128,6 +132,8 @@ namespace Shrooms.DataLayer.DAL
         public virtual DbSet<BadgeCategoryKudosType> BadgeCategoryKudosType { get; set; }
         public virtual DbSet<BadgeLog> BadgeLogs { get; set; }
 
+        public string ConnectionName { get; }
+
         public int SaveChanges(string userId)
         {
             UpdateEntityMetadata(ChangeTracker.Entries(), userId);
@@ -199,6 +205,10 @@ namespace Shrooms.DataLayer.DAL
             modelBuilder.Configurations.Add(new MonitorConfig());
             modelBuilder.Configurations.Add(new NotificationConfig());
             modelBuilder.Configurations.Add(new NotifiationUserConfig());
+            modelBuilder.Configurations.Add(new PostWatcherConfig());
+
+            var convention = new AttributeToColumnAnnotationConvention<SqlDefaultValueAttribute, string>("SqlDefaultValue", (p, attributes) => attributes.Single().DefaultValue);
+            modelBuilder.Conventions.Add(convention);
 
             new OtherEntitiesConfig(modelBuilder).Add();
         }

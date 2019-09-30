@@ -2,33 +2,15 @@
 
     <h3 class="col-xs-12" translate="common.vacations"></h3>
 
-    <div class="pull-right">
-        <label class="btn btn-warning" 
-               has-permissions="['VACATIONS_ADMINISTRATION']">
-            <input id="xlsSelect" 
-                   data-test-id="xlsSelect" 
-                   type="file" 
-                   accept=".xls" 
-                   onchange="angular.element(this).scope().fileAttached(this)" 
-                   ng-hide="true" 
-                   ng-required="true" /> 
-            <span translate="vacations.chooseFile"></span>
-        </label>
-    </div>
-
     <wave-spinner ng-if="vm.isLoading"></wave-spinner>
 
-    <div class="col-xs-12 text-center"
+    <div class="col-xs-12 text-left padding-top-bottom"
          ng-if="!vm.isLoading">
-        <strong translate="vacations.youHaveAvailableDays"
-                translate-values="{ one : vm.availableDays.availableDays }">
+        <strong>
+            Your available vacation days are no longer presented in Simoona.
+            <br />
+            You can check it monthly in your salary slip instead.
         </strong>
-        <br />
-        <strong ng-if="!!vm.availableDays.lastTimeUpdated">
-            <span translate="vacations.lastTimeUpdated"></span> {{vm.availableDays.lastTimeUpdated | date:'yyyy-MM-dd'}}
-        </strong>
-        <strong ng-if="!vm.availableDays.lastTimeUpdated" 
-                translate="vacations.neverBeenUpdated"></strong>
     </div>
 
     <div class="col-xs-12 text-left padding-top-bottom"
@@ -36,6 +18,31 @@
         <strong>
            Vacation
         </strong>
+    </div>
+
+    <div class="col-xs-12"
+        ng-if="!vm.isLoading && vm.importStatus">
+        <div class="bold text-danger" translate="vacations.importStatusHeader" translate-values="{ one: vm.importStatus.imported.length, two: vm.importStatus.skipped.length }">
+        </div>
+        <div class="bold" translate="vacations.importSkippedEntries"></div>
+        <table class="nc-table nc-table-active">
+            <thead>
+                <tr>
+                    <th translate="vacations.importCode"></th>
+                    <th translate="vacations.importFullName"></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr ng-repeat="importFailure in vm.importStatus.skipped">
+                    <td class="col-xs-1">
+                        {{importFailure.code}}
+                    </td>
+                    <td class="col-xs-11">
+                        {{importFailure.fullName}}
+                    </td>
+                </tr>
+            </tbody>
+        </table>
     </div>
 
     <!--Vacation bot integration-->

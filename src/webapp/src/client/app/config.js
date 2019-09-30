@@ -13,6 +13,7 @@
         'bootstrapLightbox',
         'LocalStorageModule',
         'monospaced.elastic',
+        'ApplicationInsightsModule',
         'SignalR',
         'pascalprecht.translate',
         'tmh.dynamicLocale',
@@ -43,6 +44,8 @@
     window.modules = modulesList;
     window.isPremium = false; // Enable/disable premium modules
     window.usingAnimatedGifs = false; // Used to determine if back-end uses AnimatedGifs plugin
+    window.kudosSendImproved = false;
+    window.usePostWatching = true; // Used to show/hide post watching feature
 
     angular.module('simoonaApp', window.modules)
         .run(execute)
@@ -73,12 +76,12 @@
         .config(localesTranslations)
         .config(dynamicLocale);
 
-    execute.$inject = ['$window', '$rootScope', '$timeout', '$state', '$stateParams', '$cookies',
-        '$uibModalStack', 'localStorageService', 'authService', 'appConfig', 'featureFlags', 'featureFlagsConstant', 'Analytics'
+    execute.$inject = ['$window', '$rootScope', '$state', '$stateParams',
+        '$uibModalStack', 'authService', 'featureFlags', 'Analytics'
     ];
 
-    function execute($window, $rootScope, $timeout, $state, $stateParams, $cookies,
-        $uibModalStack, localStorageService, authService, appConfig, featureFlags, featureFlagsConstant, Analytics) {
+    function execute($window, $rootScope, $state, $stateParams,
+        $uibModalStack, authService, featureFlags, Analytics) {
 
         featureFlags.set([{
             'key': 'premium',
@@ -91,6 +94,18 @@
             'active': window.usingAnimatedGifs,
             'name': 'AnimatedGifs',
             'description': 'Used to set if back-end uses AnimatedGifs plugin'
+        },
+        {
+            'key': 'kudosSendImproved',
+            'active': window.kudosSendImproved,
+            'name': 'Improved Kudos Send',
+            'description': 'Adds more clear functionality to send your own Kudos to other'
+        },
+        {
+            'key': 'usePostWatching',
+            'active': window.usePostWatching,
+            'name': 'Posts watch/unwatch feature',
+            'description': 'Used to mark post as being watched or not watched to receive notifications'
         }]);
 
         Analytics.pageView();
@@ -119,11 +134,28 @@
         'cfpLoadingBarProvider',
         'ChartJsProvider',
         'AnalyticsProvider',
-        'environment'
+        'environment',
+        'applicationInsightsServiceProvider'
     ];
 
     function configuration($httpProvider, $locationProvider, cfpLoadingBarProvider,
-        ChartJsProvider, AnalyticsProvider, environment) {
+        ChartJsProvider, AnalyticsProvider, environment, applicationInsightsServiceProvider) {
+
+        var options = { 
+            applicationName: '',
+            appInsightsEnabled: false,
+            appInsightsInstrumentationKey: 'appInsightsInstrumentationKeyValue'
+        };
+
+        if (!options.appInsightsEnabled)
+        {
+            options.autoPageViewTracking = false;
+            options.autoStateChangeTracking = false;
+            options.autoLogTracking = false;
+            options.autoExceptionTracking = false;
+        }
+
+        applicationInsightsServiceProvider.configure(options.appInsightsInstrumentationKey, options);
 
         $locationProvider.html5Mode(true);
 
@@ -134,14 +166,20 @@
 
         if (!!environment && environment === 'prod') {
             AnalyticsProvider.setAccount({
-                tracker: 'trackerNumber',
-                trackEvent: true
+                tracker: 'trackerNumberProd',
+                trackEvent: true,
+                set: {
+                    forceSSL: true
+                }
             });
         } else {
             AnalyticsProvider.setDomainName('none');
             AnalyticsProvider.setAccount({
-                tracker: 'trackerNumber',
-                trackEvent: true
+                tracker: 'trackerNumberNone',
+                trackEvent: true,
+                set: {
+                    forceSSL: true
+                }
             });
         }
 

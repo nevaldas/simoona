@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data.Entity;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Web;
@@ -13,17 +14,18 @@ using Shrooms.DataLayer;
 using Shrooms.DataLayer.DAL;
 using Shrooms.DataTransferObjects.Models;
 using Shrooms.DataTransferObjects.Models.Kudos;
-using Shrooms.Domain.Services.Email.Kudos;
 using Shrooms.Domain.Services.Kudos;
 using Shrooms.Domain.Services.Permissions;
 using Shrooms.Domain.Services.Roles;
 using Shrooms.DomainExceptions.Exceptions.Kudos;
 using Shrooms.EntityModels.Models;
 using Shrooms.EntityModels.Models.Kudos;
+using Shrooms.Infrastructure.FireAndForget;
 using Shrooms.UnitTests.Extensions;
 
 namespace Shrooms.API.Tests.DomainService
 {
+    [SuppressMessage("ReSharper", "PossibleMultipleEnumeration", Justification = "Acceptable for tests")]
     public class KudosServiceTests
     {
         private IKudosService _kudosService;
@@ -55,13 +57,13 @@ namespace Shrooms.API.Tests.DomainService
 
             var uow2 = Substitute.For<IUnitOfWork>();
 
-            var kudosNotificationService = Substitute.For<IKudosNotificationService>();
             var kudosServiceValidation = MockServiceValidator();
             var permissionService = MockPermissionService();
             var roleService = Substitute.For<IRoleService>();
+            var asyncRunner = Substitute.For<IAsyncRunner>();
             MockRoleService(roleService);
 
-            _kudosService = new KudosService(_uow, uow2, roleService, permissionService, kudosServiceValidation, kudosNotificationService);
+            _kudosService = new KudosService(_uow, uow2, roleService, permissionService, kudosServiceValidation, asyncRunner);
         }
 
         #region GetKudosLogs
@@ -179,6 +181,8 @@ namespace Shrooms.API.Tests.DomainService
         [Test]
         public void Should_Return_Approved_Kudos_Logs_With_Organization_Filter()
         {
+            var test = _usersDbSet.Find("CreatedUserId");
+
             MockKudosLogsForApprovedList();
             var result = _kudosService.GetApprovedKudosList("UserId", 1);
             Assert.AreEqual(1, result.Count());
@@ -270,7 +274,7 @@ namespace Shrooms.API.Tests.DomainService
 
             _kudosService.RejectKudos(kudosRejectDTO);
 
-            var log = _kudosLogsDbSet.Where(x => x.Id == 1).First();
+            var log = _kudosLogsDbSet.First(x => x.Id == 1);
             Assert.AreEqual(KudosStatus.Rejected, log.Status);
             Assert.AreEqual("testMessage", log.RejectionMessage);
         }
@@ -318,7 +322,7 @@ namespace Shrooms.API.Tests.DomainService
 
         #region AddKudosLogs
 
-        //Checks if permission validation for minus kudos operation works properly. 
+        //Checks if permission validation for minus kudos operation works properly.
         [Test]
         public void Should_Return_If_User_Has_No_Permission()
         {
@@ -437,7 +441,7 @@ namespace Shrooms.API.Tests.DomainService
         }
 
         //User can send limited amount of kudos per month, so this test
-        //checks if validation for monthly sending kudos works properly. 
+        //checks if validation for monthly sending kudos works properly.
         [Test]
         public void Should_Return_If_User_Has_No_Available_Monthly_Kudos()
         {
@@ -493,6 +497,26 @@ namespace Shrooms.API.Tests.DomainService
 
         #endregion
 
+        #region HasPendingKudos
+
+        [Test]
+        public void HasPendingKudos_Should_Return_True()
+        {
+            MockKudosLogsForStats();
+            var actual = _kudosService.HasPendingKudos("User1");
+            Assert.AreEqual(true, actual);
+        }
+
+        [Test]
+        public void HasPendingKudos_Should_Return_False()
+        {
+            MockKudosLogsForStats();
+            var actual = _kudosService.HasPendingKudos("User2");
+            Assert.AreEqual(false, actual);
+        }
+
+        #endregion
+
         #region MockData
 
         private static void MockRoleService(IRoleService roleService)
@@ -514,35 +538,36 @@ namespace Shrooms.API.Tests.DomainService
             var kudosServiceValidation = Substitute.For<IKudosServiceValidator>();
             kudosServiceValidation
                 .When(x => x.ValidateKudosMinusPermission(false))
-                .Do(x => { throw new KudosException(""); });
+                .Do(x => throw new KudosException(""));
 
             kudosServiceValidation
                 .When(x => x.ValidateUserAvailableKudos(4, 6))
-                .Do(x => { throw new KudosException(""); });
+                .Do(x => throw new KudosException(""));
 
             kudosServiceValidation
                 .When(x => x.ValidateUserAvailableKudosToSendPerMonth(2, 0))
-                .Do(x => { throw new KudosException(""); });
+                .Do(x => throw new KudosException(""));
 
             kudosServiceValidation
                .When(x => x.ValidateSendingToSameUserAsReceiving("testUserId2", "testUserId2"))
-               .Do(x => { throw new KudosException(""); });
+               .Do(x => throw new KudosException(""));
             return kudosServiceValidation;
         }
 
         private void MockFindMethod()
         {
-            _organizationDbSet.Find(2).Returns(MockOrganization().Where(x => x.Id == 2).FirstOrDefault());
+            _organizationDbSet.Find(2).Returns(MockOrganization().FirstOrDefault(x => x.Id == 2));
 
-            _kudosTypesDbSet.Find(1).Returns(MockKudosTypes().Where(x => x.Id == 1).FirstOrDefault());
-            _kudosTypesDbSet.Find(2).Returns(MockKudosTypes().Where(x => x.Id == 2).FirstOrDefault());
-            _kudosTypesDbSet.Find(3).Returns(MockKudosTypes().Where(x => x.Id == 3).FirstOrDefault());
+            _kudosTypesDbSet.Find(1).Returns(MockKudosTypes().FirstOrDefault(x => x.Id == 1));
+            _kudosTypesDbSet.Find(2).Returns(MockKudosTypes().FirstOrDefault(x => x.Id == 2));
+            _kudosTypesDbSet.Find(3).Returns(MockKudosTypes().FirstOrDefault(x => x.Id == 3));
 
-            _usersDbSet.Find("testUserId").Returns(MockUsers().Where(x => x.Id == "testUserId").FirstOrDefault());
-            _usersDbSet.Find("testUserId2").Returns(MockUsers().Where(x => x.Id == "testUserId2").FirstOrDefault());
-            _usersDbSet.Find("testUserId3").Returns(MockUsers().Where(x => x.Id == "testUserId3").FirstOrDefault());
-            _usersDbSet.Find("testUserId4").Returns(MockUsers().Where(x => x.Id == "testUserId4").FirstOrDefault());
-            _usersDbSet.Find("testUserId5").Returns(MockUsers().Where(x => x.Id == "testUserId5").FirstOrDefault());
+            _usersDbSet.Find("testUserId").Returns(MockUsers().FirstOrDefault(x => x.Id == "testUserId"));
+            _usersDbSet.Find("testUserId2").Returns(MockUsers().FirstOrDefault(x => x.Id == "testUserId2"));
+            _usersDbSet.Find("testUserId3").Returns(MockUsers().FirstOrDefault(x => x.Id == "testUserId3"));
+            _usersDbSet.Find("testUserId4").Returns(MockUsers().FirstOrDefault(x => x.Id == "testUserId4"));
+            _usersDbSet.Find("testUserId5").Returns(MockUsers().FirstOrDefault(x => x.Id == "testUserId5"));
+            _usersDbSet.Find("CreatedUserId").Returns(MockUsers().FirstOrDefault(x => x.Id == "CreatedUserId"));
         }
 
         private IQueryable<Organization> MockOrganization()
@@ -600,6 +625,11 @@ namespace Shrooms.API.Tests.DomainService
                     TotalKudos = 12,
                     SpentKudos = 2,
                     RemainingKudos = 10,
+                    OrganizationId = 2
+                },
+                new ApplicationUser
+                {
+                    Id = "CreatedUserId",
                     OrganizationId = 2
                 }
             }.AsQueryable();
@@ -731,6 +761,7 @@ namespace Shrooms.API.Tests.DomainService
                     Comments = "Comment1",
                     MultiplyBy = 1,
                     Points = 2,
+                    CreatedBy = "CreatedUserId",
                     Status = KudosStatus.Approved,
                     Created = DateTime.UtcNow
                 },
@@ -750,10 +781,21 @@ namespace Shrooms.API.Tests.DomainService
                     Comments = "Comment2",
                     MultiplyBy = 1,
                     Points = 2,
+                    CreatedBy = "CreatedUserId",
                     Status = KudosStatus.Approved,
                     Created = DateTime.UtcNow
                 }
             };
+
+            var users = new List<ApplicationUser>
+            {
+                new ApplicationUser
+                {
+                    Id = "CreatedUserId"
+                }
+            };
+
+            _usersDbSet.SetDbSetData(users.AsQueryable());
             _kudosLogsDbSet.SetDbSetData(kudosLogs.AsQueryable());
         }
 

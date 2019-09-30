@@ -5,10 +5,9 @@ using System.Globalization;
 using System.Linq;
 using System.Linq.Dynamic;
 using System.Linq.Expressions;
-using System.Threading;
+using System.Resources;
 using System.Threading.Tasks;
 using DomainServiceValidators.Validators.Kudos;
-using MoreLinq;
 using Shrooms.Constants.Authorization.Permissions;
 using Shrooms.Constants.BusinessLayer;
 using Shrooms.Constants.ErrorCodes;
@@ -23,6 +22,7 @@ using Shrooms.Domain.Services.Roles;
 using Shrooms.DomainExceptions.Exceptions;
 using Shrooms.EntityModels.Models;
 using Shrooms.EntityModels.Models.Kudos;
+using Shrooms.Infrastructure.FireAndForget;
 using Shrooms.Resources;
 
 namespace Shrooms.Domain.Services.Kudos
@@ -35,17 +35,17 @@ namespace Shrooms.Domain.Services.Kudos
         private readonly IRoleService _roleService;
         private readonly IPermissionService _permissionService;
         private readonly IKudosServiceValidator _kudosServiceValidator;
-        private readonly IKudosNotificationService _kudosNotificationService;
-
+        private readonly IAsyncRunner _asyncRunner;
         private readonly IDbSet<KudosLog> _kudosLogsDbSet;
         private readonly IDbSet<KudosType> _kudosTypesDbSet;
         private readonly IDbSet<ApplicationUser> _usersDbSet;
         private readonly IRepository<KudosLog> _kudosLogRepository;
         private readonly IRepository<ApplicationUser> _applicationUserRepository;
-
         private Expression<Func<KudosType, bool>> _excludeNecessaryKudosTypes = x => x.Type != ConstBusinessLayer.KudosTypeEnum.Send &&
                               x.Type != ConstBusinessLayer.KudosTypeEnum.Minus &&
                               x.Type != ConstBusinessLayer.KudosTypeEnum.Other;
+
+        private readonly ResourceManager _resourceManager;
 
         public KudosService(
             IUnitOfWork2 uow,
@@ -53,19 +53,20 @@ namespace Shrooms.Domain.Services.Kudos
             IRoleService roleService,
             IPermissionService permissionService,
             IKudosServiceValidator kudosServiceValidator,
-            IKudosNotificationService kudosNotificationService)
+            IAsyncRunner asyncRunner)
         {
             _uow = uow;
             _roleService = roleService;
             _permissionService = permissionService;
             _kudosServiceValidator = kudosServiceValidator;
-            _kudosNotificationService = kudosNotificationService;
-
+            _asyncRunner = asyncRunner;
             _kudosLogsDbSet = uow.GetDbSet<KudosLog>();
             _kudosTypesDbSet = uow.GetDbSet<KudosType>();
             _usersDbSet = uow.GetDbSet<ApplicationUser>();
             _kudosLogRepository = unitOfWork.GetRepository<KudosLog>();
             _applicationUserRepository = unitOfWork.GetRepository<ApplicationUser>();
+
+            _resourceManager = new ResourceManager("Shrooms.Resources.Models.Kudos.Kudos", typeof(ResourceUtilities).Assembly);
         }
 
         public async Task CreateKudosType(NewKudosTypeDto dto)
@@ -156,21 +157,30 @@ namespace Shrooms.Domain.Services.Kudos
                     log.KudosBasketId == null)
                 .Where(KudosServiceHelper.StatusFilter(options.Status))
                 .Where(KudosServiceHelper.UserFilter(options.SearchUserId))
+                .Where(KudosServiceHelper.TypeFilter(options.FilteringType))
                 .GroupJoin(_usersDbSet, log => log.CreatedBy, u => u.Id, KudosServiceHelper.MapKudosLogsToDto())
                 .OrderBy(string.Concat(options.SortBy, " ", options.SortOrder));
 
             var logsTotalCount = kudosLogsQuery.Count();
-            int entriesCountToSkip = EntriesCountToSkip(options.Page);
+
+            var entriesCountToSkip = EntriesCountToSkip(options.Page);
             var kudosLogs = kudosLogsQuery
                 .Skip(() => entriesCountToSkip)
                 .Take(() => ConstBusinessLayer.MaxKudosLogsPerPage)
                 .ToList();
 
-            foreach (var kudosLog in kudosLogs)
+            var user = _usersDbSet.Find(options.UserId);
+
+            if (user != null)
             {
-                if (IsTranslatableKudosType(kudosLog.Type.Type))
+                var culture = CultureInfo.GetCultureInfo(user.CultureCode);
+
+                foreach (var kudosLog in kudosLogs)
                 {
-                    kudosLog.Type.Name = TranslateKudos(options.UserId, "KudosType" + kudosLog.Type.Name);
+                    if (IsTranslatableKudosType(kudosLog.Type.Type))
+                    {
+                        kudosLog.Type.Name = TranslateKudos("KudosType" + kudosLog.Type.Name, culture);
+                    }
                 }
             }
 
@@ -185,27 +195,50 @@ namespace Shrooms.Domain.Services.Kudos
         {
             ValidateUser(organizationId, userId);
 
-            var userLogsQuery = _kudosLogsDbSet
-                .Where(log =>
-                    log.EmployeeId == userId &&
-                    log.OrganizationId == organizationId)
-                .OrderByDescending(log => log.Created)
-                .Select(MapUserKudosLogsToDto());
+            var userLogsQuery = (from kudLog in _kudosLogsDbSet
+                           where kudLog.EmployeeId == userId && kudLog.OrganizationId == organizationId
+                           from usr in _usersDbSet.Where(u => u.Id == kudLog.CreatedBy).DefaultIfEmpty()
+                           select new KudosUserLogDTO
+                           {
+                               Comment = kudLog.Comments,
+                               Created = kudLog.Created,
+                               Id = kudLog.Id,
+                               Multiplier = kudLog.MultiplyBy,
+                               Points = kudLog.Points,
+                               Type = new KudosLogTypeDTO
+                               {
+                                   Name = kudLog.KudosTypeName,
+                                   Value = kudLog.KudosTypeValue,
+                                   Type = kudLog.KudosSystemType
+                               },
+                               Status = kudLog.Status.ToString(),
+                               Sender = new KudosLogUserDTO
+                               {
+                                   FullName = usr == null ? string.Empty : usr.FirstName + " " + usr.LastName,
+                                   Id = usr == null ? string.Empty : kudLog.CreatedBy
+                               },
+                               PictureId = kudLog.PictureId
+                           }).OrderByDescending(o => o.Created);
 
             var logCount = userLogsQuery.Count();
-            int entreisCountToSkip = EntriesCountToSkip(page);
+
+            var entriesCountToSkip = EntriesCountToSkip(page);
             var userLogs = userLogsQuery
-                .Skip(() => entreisCountToSkip)
+                .Skip(() => entriesCountToSkip)
                 .Take(() => ConstBusinessLayer.MaxKudosLogsPerPage)
                 .ToList();
+            var user = _usersDbSet.Find(userId);
 
-            SetKudosSendersName(userLogs.Select(log => log.Sender));
-
-            foreach (var userLog in userLogs)
+            if (user != null)
             {
-                if (IsTranslatableKudosType(userLog.Type.Type))
+                var culture = CultureInfo.GetCultureInfo(user.CultureCode);
+
+                foreach (var userLog in userLogs)
                 {
-                    userLog.Type.Name = TranslateKudos(userId, "KudosType" + userLog.Type.Name);
+                    if (IsTranslatableKudosType(userLog.Type.Type))
+                    {
+                        userLog.Type.Name = TranslateKudos($"KudosType{userLog.Type.Name}", culture);
+                    }
                 }
             }
 
@@ -224,12 +257,14 @@ namespace Shrooms.Domain.Services.Kudos
                     log.Status == KudosStatus.Approved &&
                     log.KudosSystemType != ConstBusinessLayer.KudosTypeEnum.Minus &&
                     log.OrganizationId == userAndOrg.OrganizationId)
+                .Join(_usersDbSet,
+                    l => l.CreatedBy,
+                    s => s.Id,
+                    MapKudosLogToWallKudosLogDTO())
                 .OrderByDescending(log => log.Created)
-                .Select(MapKudosLogToWallKudosLogDTO())
                 .Take(() => ConstBusinessLayer.WallKudosLogCount)
                 .ToList();
 
-            SetKudosSendersName(approvedKudos.Select(log => log.Sender));
             return approvedKudos;
         }
 
@@ -246,11 +281,18 @@ namespace Shrooms.Domain.Services.Kudos
                         kudos.OrganizationId == organizationId)
                     .ToList();
 
-            foreach (var kudosLog in kudosLogs)
+            var user = _usersDbSet.Find(userId);
+
+            if (user != null)
             {
-                if (IsTranslatableKudosType(kudosLog.KudosSystemType))
+                var culture = CultureInfo.GetCultureInfo(user.CultureCode);
+
+                foreach (var kudosLog in kudosLogs)
                 {
-                    kudosLog.KudosTypeName = TranslateKudos(userId, "KudosType" + kudosLog.KudosTypeName);
+                    if (IsTranslatableKudosType(kudosLog.KudosSystemType))
+                    {
+                        kudosLog.KudosTypeName = TranslateKudos($"KudosType{kudosLog.KudosTypeName}", culture);
+                    }
                 }
             }
 
@@ -274,11 +316,19 @@ namespace Shrooms.Domain.Services.Kudos
                 .Select(MapKudosTypesToDTO)
                 .ToList();
 
-            foreach (var kudosType in kudosTypesDTO)
+            var user = _usersDbSet.Find(userAndOrg.UserId);
+
+            if (user != null)
             {
-                if (IsTranslatableKudosType(kudosType.Type))
+                var culture = CultureInfo.GetCultureInfo(user.CultureCode);
+
+                foreach (var kudosType in kudosTypesDTO)
                 {
-                    kudosType.Name = TranslateKudos(userAndOrg.UserId, "KudosType" + kudosType.Name);
+                    if (IsTranslatableKudosType(kudosType.Type))
+                    {
+                        kudosType.Name = TranslateKudos($"KudosType{kudosType.Name}", culture);
+                        kudosType.Description = TranslateKudos($"KudosType{kudosType.Name}Description", culture);
+                    }
                 }
             }
 
@@ -335,11 +385,11 @@ namespace Shrooms.Domain.Services.Kudos
             {
                 if (kudosLog.IsMinus())
                 {
-                    _kudosNotificationService.NotifyApprovedKudosDecreaseRecipient(kudosLog);
+                    _asyncRunner.Run<IKudosNotificationService>(n => n.NotifyApprovedKudosDecreaseRecipient(kudosLog), _uow.ConnectionName);
                 }
                 else
                 {
-                    _kudosNotificationService.NotifyApprovedKudosRecipient(kudosLog);
+                    _asyncRunner.Run<IKudosNotificationService>(n => n.NotifyApprovedKudosRecipient(kudosLog), _uow.ConnectionName);
                 }
             }
 
@@ -360,7 +410,7 @@ namespace Shrooms.Domain.Services.Kudos
 
             if (!kudosLog.IsRecipientDeleted())
             {
-                _kudosNotificationService.NotifyRejectedKudosLogSender(kudosLog);
+                _asyncRunner.Run<IKudosNotificationService>(n => n.NotifyRejectedKudosLogSender(kudosLog), _uow.ConnectionName);
             }
 
             _uow.SaveChanges(false);
@@ -402,14 +452,14 @@ namespace Shrooms.Domain.Services.Kudos
                     ConstBusinessLayer.KudosAvailableToSendThisMonth - sentThisMonth : remaining;
             }
 
-            return new decimal[2] { sentThisMonth, available < 0 ? 0 : available };
+            return new[] { sentThisMonth, available < 0 ? 0 : available };
         }
 
         public void AddKudosLog(AddKudosLogDTO kudosLog)
         {
             AddKudosRequest(kudosLog);
         }
-        
+
         public void AddKudosLog(AddKudosLogDTO kudosDto, decimal points)
         {
             AddKudosRequest(kudosDto, points);
@@ -440,7 +490,7 @@ namespace Shrooms.Domain.Services.Kudos
                 if (kudosDto.KudosType.Type == ConstBusinessLayer.KudosTypeEnum.Send)
                 {
                     kudosDto.ReceivingUser = receivingUser;
-                    _kudosNotificationService.NotifyAboutKudosSent(kudosDto);
+                    _asyncRunner.Run<IKudosNotificationService>(n => n.NotifyAboutKudosSent(kudosDto), _uow.ConnectionName);
                     UpdateProfileKudos(kudosDto.ReceivingUser, kudosLog);
                 }
             }
@@ -486,40 +536,47 @@ namespace Shrooms.Domain.Services.Kudos
 
         public void UpdateProfileKudos(ApplicationUser user, UserAndOrganizationDTO userOrg)
         {
-            var allUserkudosLogs = _kudosLogsDbSet
+            var allUserKudosLogs = _kudosLogsDbSet
                 .Where(x => x.EmployeeId == user.Id &&
                             x.Status == KudosStatus.Approved &&
                             x.Created >= user.EmploymentDate &&
-                            x.OrganizationId == userOrg.OrganizationId)
-                .ToList();
+                            x.OrganizationId == userOrg.OrganizationId);
 
-            var kudosTotal = allUserkudosLogs
+            var kudosTotal = allUserKudosLogs
                 .Where(x => x.KudosSystemType != ConstBusinessLayer.KudosTypeEnum.Minus &&
                             x.KudosBasketId == null)
-                .Sum(x => x.Points);
+                .Sum(x => (decimal?)x.Points);
 
-            user.TotalKudos = kudosTotal;
+            user.TotalKudos = kudosTotal ?? 0;
 
-            var spentKudos = allUserkudosLogs
+            var spentKudos = allUserKudosLogs
                 .Where(x => x.KudosSystemType == ConstBusinessLayer.KudosTypeEnum.Minus ||
                             x.KudosBasketId != null)
-                .Sum(x => x.Points);
+                .Sum(x => (decimal?)x.Points);
 
-            user.SpentKudos = spentKudos;
-            user.RemainingKudos = kudosTotal - spentKudos;
+            user.SpentKudos = spentKudos ?? 0;
+            user.RemainingKudos = user.TotalKudos - user.SpentKudos;
             _uow.SaveChanges(userOrg.UserId);
         }
 
         public bool HasPendingKudos(string employeeId)
         {
-            IList<KudosLog> kudosLogs = _kudosLogsDbSet.Where(e => e.EmployeeId == employeeId).ToList();
+            IList<KudosLog> kudosLogs = _kudosLogsDbSet.Where(e => e.EmployeeId == employeeId &&
+                                                                    e.Status == KudosStatus.Pending).ToList();
 
             return kudosLogs.Any();
         }
 
         private static Expression<Func<ApplicationUser, UserKudosAutocompleteDTO>> MapUsersToAutocompleteDTO()
         {
-            return u => new UserKudosAutocompleteDTO() { Id = u.Id, FormattedName = u.FirstName + " " + u.LastName, Email = u.Email, UserName = u.UserName, PictureId = u.PictureId };
+            return u => new UserKudosAutocompleteDTO
+            {
+                Id = u.Id,
+                FormattedName = u.FirstName + " " + u.LastName,
+                Email = u.Email,
+                UserName = u.UserName,
+                PictureId = u.PictureId
+            };
         }
 
         private static Expression<Func<ApplicationUser, UserKudosDTO>> MapUserToKudosDTO()
@@ -537,27 +594,25 @@ namespace Shrooms.Domain.Services.Kudos
 
         private void ValidateUser(int organizationId, string userId)
         {
-            var userExists = _usersDbSet.Any(x =>
-                            x.Id == userId &&
-                            x.OrganizationId == organizationId);
+            var userExists = _usersDbSet.Any(x => x.Id == userId && x.OrganizationId == organizationId);
 
             _kudosServiceValidator.CheckIfUserExists(userExists);
         }
 
         private Expression<Func<KudosLog, UserKudosInformationDTO>> MapKudosLogsToKudosInformationDTO()
         {
-            return x => new UserKudosInformationDTO()
+            return x => new UserKudosInformationDTO
             {
                 Comments = x.Comments,
                 Created = x.Created,
                 MultiplyBy = x.MultiplyBy,
                 Points = x.Points,
-                Type = new KudosTypeDTO()
+                Type = new KudosTypeDTO
                 {
                     Name = x.KudosTypeName,
                     Value = x.KudosTypeValue
                 },
-                Sender = _usersDbSet.FirstOrDefault(u => u.Id == x.CreatedBy)
+                Sender = _usersDbSet.Find(x.CreatedBy)
             };
         }
 
@@ -566,61 +621,9 @@ namespace Shrooms.Domain.Services.Kudos
             return (pageRequested - LastPage) * ConstBusinessLayer.MaxKudosLogsPerPage;
         }
 
-        private Expression<Func<KudosLog, KudosUserLogDTO>> MapUserKudosLogsToDto()
-        {
-            return log => new KudosUserLogDTO
-            {
-                Comment = log.Comments,
-                Created = log.Created,
-                Id = log.Id,
-                Multiplier = log.MultiplyBy,
-                Points = log.Points,
-                Type = new KudosLogTypeDTO
-                {
-                    Name = log.KudosTypeName,
-                    Value = log.KudosTypeValue,
-                    Type = log.KudosSystemType
-                },
-                Status = log.Status.ToString(),
-                Sender = new KudosLogUserDTO
-                {
-                    Id = log.CreatedBy
-                },
-                PictureId = log.PictureId
-            };
-        }
-
-        private void SetKudosSendersName(IEnumerable<KudosLogUserDTO> users)
-        {
-            var logCreatorsId = users
-                .Select(log => log.Id);
-            var logCreators = _usersDbSet
-                .Where(usr => logCreatorsId.Contains(usr.Id))
-                .Select(x => new KudosLogUserDTO
-                {
-                    FullName = x.FirstName + " " + x.LastName,
-                    Id = x.Id
-                })
-                .ToList();
-
-            users.ForEach(log =>
-                    log.FullName = GetUserFullName(logCreators, log.Id));
-        }
-
-        private static string GetUserFullName(IEnumerable<KudosLogUserDTO> users, string userId)
-        {
-            var user = users.FirstOrDefault(usr => usr.Id == userId);
-            if (user == null)
-            {
-                return null;
-            }
-
-            return user.FullName;
-        }
-
         private KudosTypeDTO MapKudosTypesToDTO(KudosType kudosType)
         {
-            return new KudosTypeDTO()
+            return new KudosTypeDTO
             {
                 Id = kudosType.Id,
                 Name = kudosType.Name,
@@ -643,9 +646,9 @@ namespace Shrooms.Domain.Services.Kudos
             return type => type.Type != ConstBusinessLayer.KudosTypeEnum.Minus;
         }
 
-        private Expression<Func<KudosLog, WallKudosLogDTO>> MapKudosLogToWallKudosLogDTO()
+        private Expression<Func<KudosLog, ApplicationUser, WallKudosLogDTO>> MapKudosLogToWallKudosLogDTO()
         {
-            return log => new WallKudosLogDTO
+            return (log, sender) => new WallKudosLogDTO
             {
                 Comment = log.Comments,
                 Points = log.Points,
@@ -653,13 +656,13 @@ namespace Shrooms.Domain.Services.Kudos
                 PictureId = log.PictureId,
                 Receiver = new KudosLogUserDTO
                 {
-                    Id = log.Employee != null ? log.Employee.Id : null,
-                    FullName = log.Employee != null ? log.Employee.FirstName + " " + log.Employee.LastName : null
+                    FullName = log.Employee != null ? log.Employee.FirstName + " " + log.Employee.LastName : null,
+                    Id = log.Employee != null ? log.Employee.Id : null
                 },
                 Sender = new KudosLogUserDTO
                 {
-                    Id = log.KudosSystemType == ConstBusinessLayer.KudosTypeEnum.Send ? log.CreatedBy : null,
-                    FullName = null
+                    FullName = sender.FirstName + " " + sender.LastName,
+                    Id = log.KudosSystemType == ConstBusinessLayer.KudosTypeEnum.Send ? log.CreatedBy : null
                 }
             };
         }
@@ -672,7 +675,7 @@ namespace Shrooms.Domain.Services.Kudos
             var kudosType = _kudosTypesDbSet.Find(kudosLog.PointsTypeId);
             _kudosServiceValidator.ValidateKudosType(kudosType);
 
-           return new AddKudosDTO
+            return new AddKudosDTO
             {
                 KudosLog = kudosLog,
                 KudosType = kudosType,
@@ -703,7 +706,7 @@ namespace Shrooms.Domain.Services.Kudos
         private void MinusKudos(AddKudosDTO kudosDTO)
         {
             var hasKudosAdminPermission = HasKudosAdministratorPermission(kudosDTO.KudosLog);
-            var hasKudosServiceRequestCategoryPermission = HasKudosServiceRequestCategoryPermissions(kudosDTO.KudosLog);
+            var hasKudosServiceRequestCategoryPermission = HasKudosServiceRequestCategoryPermissions();
             _kudosServiceValidator.ValidateKudosMinusPermission(hasKudosAdminPermission || hasKudosServiceRequestCategoryPermission);
 
             InsertKudosLog(kudosDTO, KudosStatus.Pending);
@@ -741,8 +744,7 @@ namespace Shrooms.Domain.Services.Kudos
         private AddKudosDTO GenerateLogForKudosMinusOperation(AddKudosDTO kudosDTO)
         {
             var minusKudosType = _kudosTypesDbSet
-                    .Where(n => n.Type == ConstBusinessLayer.KudosTypeEnum.Minus)
-                    .FirstOrDefault();
+                    .FirstOrDefault(n => n.Type == ConstBusinessLayer.KudosTypeEnum.Minus);
 
             var kudosLogForMinusKudos = new AddKudosLogDTO
             {
@@ -817,38 +819,35 @@ namespace Shrooms.Domain.Services.Kudos
             return _permissionService.UserHasPermission(userAndOrg, AdministrationPermissions.Kudos);
         }
 
-        private bool HasKudosServiceRequestCategoryPermissions(UserAndOrganizationDTO userAndOrg)
+        private bool HasKudosServiceRequestCategoryPermissions()
         {
-            ApplicationUser kudosServiceRequestCategory = null;
+            ApplicationUser kudosServiceRequestCategory;
+
             try
             {
                 kudosServiceRequestCategory = _usersDbSet
                     .Include(x => x.ServiceRequestCategoriesAssigned)
-                    .Where(x => x.ServiceRequestCategoriesAssigned.Any(y => y.Name == "Kudos"))
-                    .FirstOrDefault();
+                    .FirstOrDefault(x => x.ServiceRequestCategoriesAssigned.Any(y => y.Name == "Kudos"));
             }
             catch (ArgumentNullException)
             {
                 return false;
             }
 
-            if (kudosServiceRequestCategory != null)
+            if (kudosServiceRequestCategory == null)
             {
-                return true;
+                return false;
             }
 
-            return false;
+            return true;
         }
 
-        private string TranslateKudos(string userId, string textToTranslate)
+        private string TranslateKudos(string textToTranslate, CultureInfo culture)
         {
-            var user = _usersDbSet.FirstOrDefault(u => u.Id == userId);
-            Thread.CurrentThread.CurrentCulture = CultureInfo.GetCultureInfo(user.CultureCode);
-
-            return ResourceUtilities.GetResourceValue("Models.Kudos.Kudos", textToTranslate);
+            return ResourceUtilities.GetResourceValue(_resourceManager, textToTranslate, culture);
         }
 
-        private bool IsTranslatableKudosType(ConstBusinessLayer.KudosTypeEnum type)
+        private static bool IsTranslatableKudosType(ConstBusinessLayer.KudosTypeEnum type)
         {
             return type == ConstBusinessLayer.KudosTypeEnum.Send ||
                    type == ConstBusinessLayer.KudosTypeEnum.Minus ||

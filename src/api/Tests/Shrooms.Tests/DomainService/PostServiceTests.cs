@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Data.Entity;
 using System.Linq;
 using NSubstitute;
@@ -28,6 +29,7 @@ namespace Shrooms.UnitTests.DomainService
         private IDbSet<ApplicationUser> _usersDbSet;
         private IPermissionService _permissionService;
         private IDbSet<WallModerator> _wallModeratorsDbSet;
+        private string _userId = Guid.NewGuid().ToString();
 
         [SetUp]
         public void TestInitializer()
@@ -44,7 +46,7 @@ namespace Shrooms.UnitTests.DomainService
 
             var commentService = Substitute.For<ICommentService>();
 
-            _postService = new PostService(uow, _permissionService, postNotificationService, commentService);
+            _postService = new PostService(uow, _permissionService, commentService);
         }
 
         [Test]
@@ -108,7 +110,7 @@ namespace Shrooms.UnitTests.DomainService
 
             var users = new List<ApplicationUser>
             {
-                new ApplicationUser { Id = "testUser" }
+                new ApplicationUser { Id = _userId }
             };
             _usersDbSet.SetDbSetData(users.AsQueryable());
 
@@ -117,7 +119,7 @@ namespace Shrooms.UnitTests.DomainService
                 MessageBody = "test",
                 OrganizationId = 2,
                 PictureId = "pic",
-                UserId = "testUser",
+                UserId = _userId,
                 WallId = walls.First().Id
             };
 

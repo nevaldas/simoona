@@ -11,12 +11,11 @@
         'vacationsRepository',
         'notifySrv',
         'shroomsFileUploader',
-        'authService',
         'errorHandler'
     ];
 
     function vacationsController($rootScope, $scope, vacationsRepository, notifySrv,
-        shroomsFileUploader, authService, errorHandler) {
+        shroomsFileUploader, errorHandler) {
         var vm = this;
 
         var uploadConfig = {
@@ -27,7 +26,6 @@
 
         $rootScope.pageTitle = 'common.vacations';
 
-        //vm.vacationList = [];
         vm.availableDays = {};
         vm.isLoading = false;
 
@@ -39,15 +37,6 @@
         //////////
 
         function init() {
-            // vacationsRepository.getVacationHistory().then(function (response) {
-            //     vm.vacationList = response;
-            //     vm.isLoading = false;
-            // }, function(error) {
-            //     vm.isLoading = false;
-            //     errorHandler.handleErrorMessage(error);
-            // });
-
-            getAvailableDays();
         }
 
         function fileAttached(input) {
@@ -72,7 +61,7 @@
         function uploadVacationFile() {
             vacationsRepository.uploadVacationFile(xlsVacationFile).then(function (response) {
                     notifySrv.success('vacations.vacationTimeReportImportedSuccessfully');
-
+                    vm.importStatus = response.data;
                     getAvailableDays();
                 }, errorHandler.handleErrorMessage);
         }
